@@ -39,11 +39,9 @@ func main() {
 
 	// ------------------------------------------------------------
 	// Шаг 4. Создаём кэш с ограничением размера и TTL.
-	// Первый аргумент — максимальное количество записей (10000),
-	// второй — время жизни записи (10 минут).
 	c := cache.New(10000, 10*time.Minute)
 
-	// Прогреваем кэш из БД, чтобы при старте быстро отвечать на запросы.
+	// Прогреваем кэш из БД.
 	if err := c.LoadFromDB(func() ([]*model.Order, error) {
 		return st.GetAllOrders(ctx)
 	}); err != nil {
@@ -52,7 +50,6 @@ func main() {
 
 	// ------------------------------------------------------------
 	// Шаг 5. Запускаем Kafka consumer.
-	// Он будет читать сообщения из топика, сохранять заказы в БД и обновлять кэш.
 	consumer := kafka.NewConsumer(cfg.KafkaBroker, cfg.KafkaTopic, "order-service-group", st, c)
 	consumer.Start(ctx)
 	defer consumer.Close()
@@ -62,10 +59,16 @@ func main() {
 	h := handler.New(st, c)
 
 	mux := http.NewServeMux()
+	// API маршрут
 	mux.HandleFunc("/order/", h.GetOrder)
 
+	// Раздача статического интерфейса из папки web
+	webDir := http.Dir("./web")
+	fileServer := http.FileServer(webDir)
+	mux.Handle("/", fileServer) // всё, что не /order/, пойдёт на файловый сервер
+
 	srv := &http.Server{
-		Addr:              cfg.BindAddress + ":" + cfg.HTTPPort, // слушаем только на указанном адресе (по умолч. 127.0.0.1)
+		Addr:              cfg.BindAddress + ":" + cfg.HTTPPort,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -75,14 +78,14 @@ func main() {
 	}
 
 	// ------------------------------------------------------------
-	// Шаг 7. Graceful shutdown: ловим сигналы ОС и аккуратно останавливаем сервис.
+	// Шаг 7. Graceful shutdown.
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Println("shutting down...")
 
-		cancel() // останавливаем Kafka consumer
+		cancel()
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
