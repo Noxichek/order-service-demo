@@ -2,35 +2,60 @@ package cache
 
 import (
     "sync"
+    "time"
     "order-service/internal/model"
 )
 
 type Cache struct {
-    mu    sync.RWMutex
-    items map[string]*model.Order
+    mu         sync.RWMutex
+    items      map[string]cacheEntry
+    maxEntries int
+    ttl        time.Duration
 }
 
-func New() *Cache {
+type cacheEntry struct {
+    order   *model.Order
+    addedAt time.Time
+}
+
+func New(maxEntries int, ttl time.Duration) *Cache {
     return &Cache{
-        items: make(map[string]*model.Order),
+        items:      make(map[string]cacheEntry),
+        maxEntries: maxEntries,
+        ttl:        ttl,
     }
 }
 
 func (c *Cache) Get(uid string) (*model.Order, bool) {
     c.mu.RLock()
-    defer c.mu.RUnlock()
-    order, ok := c.items[uid]
-    return order, ok
+    entry, ok := c.items[uid]
+    c.mu.RUnlock()
+    if !ok {
+        return nil, false
+    }
+    if time.Since(entry.addedAt) > c.ttl {
+        c.mu.Lock()
+        delete(c.items, uid)
+        c.mu.Unlock()
+        return nil, false
+    }
+    return entry.order, true
 }
 
 func (c *Cache) Set(uid string, order *model.Order) {
     c.mu.Lock()
     defer c.mu.Unlock()
-    c.items[uid] = order
+    if len(c.items) >= c.maxEntries {
+        // Удаляем случайную запись (или можно реализовать LRU)
+        for k := range c.items {
+            delete(c.items, k)
+            break
+        }
+    }
+    c.items[uid] = cacheEntry{order: order, addedAt: time.Now()}
 }
 
-// LoadFromDB загружает все заказы из базы в кэш при старте.
-// Сигнатура: передаём store, который умеет получать список UID или все заказы.
+// LoadFromDB теперь принимает функцию getAll и заполняет кэш
 func (c *Cache) LoadFromDB(getAll func() ([]*model.Order, error)) error {
     orders, err := getAll()
     if err != nil {
@@ -39,7 +64,10 @@ func (c *Cache) LoadFromDB(getAll func() ([]*model.Order, error)) error {
     c.mu.Lock()
     defer c.mu.Unlock()
     for _, o := range orders {
-        c.items[o.OrderUID] = o
+        if len(c.items) >= c.maxEntries {
+            break
+        }
+        c.items[o.OrderUID] = cacheEntry{order: o, addedAt: time.Now()}
     }
     return nil
 }

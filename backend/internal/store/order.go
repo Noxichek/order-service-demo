@@ -1,8 +1,9 @@
 package store
 
 import (
-    "context"
-    "order-service/internal/model"
+	"context"
+	"fmt"
+	"order-service/internal/model"
 )
 
 func (s *Store) SaveOrder(ctx context.Context, order model.Order) error {
@@ -167,6 +168,9 @@ func (s *Store) GetOrderByUID(ctx context.Context, uid string) (*model.Order, er
         }
         order.Items = append(order.Items, item)
     }
+    if err := rows.Err(); err != nil {
+    return nil, fmt.Errorf("rows iteration error: %w", err)
+    }
     return order, nil
 }
 
@@ -189,6 +193,10 @@ func (s *Store) GetAllOrders(ctx context.Context) ([]*model.Order, error) {
             continue // или возвращать ошибку, но лучше пропустить битый заказ
         }
         orders = append(orders, order)
+    }
+    
+     if err := rows.Err(); err != nil {
+    return nil, fmt.Errorf("rows iteration error: %w", err)
     }
     return orders, nil
 }

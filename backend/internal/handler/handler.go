@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"order-service/internal/cache"
 	"order-service/internal/store"
 )
@@ -39,15 +41,17 @@ func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
 	// Ищем в кеше
 	order, found := h.cache.Get(uid)
 	if !found {
-		// Из БД
 		var err error
 		order, err = h.store.GetOrderByUID(r.Context(), uid)
 		if err != nil {
-			log.Printf("order %s not found: %v", uid, err)
-			http.Error(w, "order not found", http.StatusNotFound)
+			if errors.Is(err, pgx.ErrNoRows) {
+				http.Error(w, "order not found", http.StatusNotFound)
+			} else {
+				log.Printf("internal error fetching order %s: %v", uid, err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
 			return
 		}
-		// Кладём в кеш для будущих запросов
 		h.cache.Set(uid, order)
 	}
 
